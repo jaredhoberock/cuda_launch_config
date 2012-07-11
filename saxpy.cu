@@ -1,5 +1,7 @@
 #include "cuda_launch_config.hpp"
 #include <thrust/device_vector.h>
+#include <thrust/logical.h>
+#include <thrust/functional.h>
 #include <cassert>
 
 __global__ void saxpy(float a, float *x, float *y, size_t n)
@@ -46,9 +48,7 @@ int main()
   saxpy<<<num_blocks,num_threads>>>(a, raw_pointer_cast(x.data()), raw_pointer_cast(y.data()), n);
 
   // validate the result
-  thrust::device_vector<float> reference(n, 200);
-
-  assert(reference == y);
+  assert(thrust::all_of(y.begin(), y.end(), thrust::placeholders::_1 == 200));
 
   return 0;
 }
