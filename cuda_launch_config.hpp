@@ -207,7 +207,7 @@ std::size_t block_size_with_maximum_potential_occupancy(const cudaFuncAttributes
                                                         const cudaDeviceProp &properties,
                                                         UnaryFunction block_size_to_dynamic_smem_size)
 {
-  return __cuda_launch_config_detail::default_block_configuration(properties, attributes, block_size_to_dynamic_smem_size);
+  return __cuda_launch_config_detail::default_block_size(properties, attributes, block_size_to_dynamic_smem_size);
 }
 
 
