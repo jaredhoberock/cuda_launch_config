@@ -18,8 +18,6 @@
 
 #include <cstddef>
 #include <cuda_runtime_api.h>
-#include <thrust/tuple.h>
-#include <thrust/extrema.h>
 
 namespace __cuda_launch_config_detail
 {
@@ -28,6 +26,13 @@ using std::size_t;
 
 namespace util
 {
+
+
+template<typename T>
+T min_(const T &lhs, const T &rhs)
+{
+  return rhs < lhs ? rhs : lhs;
+}
 
 
 template <typename T>
@@ -121,33 +126,18 @@ size_t max_active_blocks_per_multiprocessor(const cudaDeviceProp     &properties
   const size_t ctaLimitSMem    = smemPerCTA > 0 ? properties.sharedMemPerBlock / smemPerCTA : maxBlocksPerSM;
   const size_t ctaLimitThreads =                  maxThreadsPerSM              / CTA_SIZE;
 
-  return thrust::min<size_t>(ctaLimitRegs, thrust::min<size_t>(ctaLimitSMem, thrust::min<size_t>(ctaLimitThreads, maxBlocksPerSM)));
-}
-
-
-inline __host__ __device__
-size_t proportional_smem_allocation(const cudaDeviceProp     &properties,
-                                    const cudaFuncAttributes &attributes,
-                                    size_t blocks_per_processor)
-{
-  size_t smem_per_processor    = properties.sharedMemPerBlock;
-  size_t smem_allocation_unit  = smem_allocation_unit(properties);
-
-  size_t total_smem_per_block  = util::round_z(smem_per_processor / blocks_per_processor, smem_allocation_unit);
-  size_t static_smem_per_block = attributes.sharedSizeBytes;
-  
-  return total_smem_per_block - static_smem_per_block;
+  return util::min_(ctaLimitRegs, util::min_(ctaLimitSMem, util::min_(ctaLimitThreads, maxBlocksPerSM)));
 }
 
 
 template <typename UnaryFunction>
 inline __host__ __device__
-thrust::pair<size_t,size_t> default_block_configuration(const cudaDeviceProp     &properties,
-                                                        const cudaFuncAttributes &attributes,
-                                                        UnaryFunction block_size_to_smem_size)
+size_t default_block_size(const cudaDeviceProp     &properties,
+                          const cudaFuncAttributes &attributes,
+                          UnaryFunction block_size_to_smem_size)
 {
   size_t max_occupancy      = properties.maxThreadsPerMultiProcessor;
-  size_t largest_blocksize  = (thrust::min)(properties.maxThreadsPerBlock, attributes.maxThreadsPerBlock);
+  size_t largest_blocksize  = util::min_(properties.maxThreadsPerBlock, attributes.maxThreadsPerBlock);
   size_t granularity        = properties.warpSize;
   size_t max_blocksize      = 0;
   size_t highest_occupancy  = 0;
@@ -167,7 +157,7 @@ thrust::pair<size_t,size_t> default_block_configuration(const cudaDeviceProp    
       break;
   }
 
-  return thrust::make_pair(max_blocksize, max_occupancy / max_blocksize);
+  return max_blocksize;
 }
 
 
@@ -176,46 +166,18 @@ thrust::pair<size_t,size_t> default_block_configuration(const cudaDeviceProp    
 
 template<typename UnaryFunction>
 inline __host__ __device__
-thrust::tuple<std::size_t, std::size_t, std::size_t>
-block_size_with_maximum_potential_occupancy(const cudaFuncAttributes &attributes,
-                                            const cudaDeviceProp &properties,
-                                            UnaryFunction block_size_to_dynamic_smem_size)
+std::size_t block_size_with_maximum_potential_occupancy(const cudaFuncAttributes &attributes,
+                                                        const cudaDeviceProp &properties,
+                                                        UnaryFunction block_size_to_dynamic_smem_size)
 {
-  using thrust::tie;
-  using __cuda_launch_config_detail;
-
-  std::size_t block_size = 0, blocks_per_multiprocessor = 0;
-
-  tie(block_size, blocks_per_multiprocessor) = default_block_configuration(properties, attributes, block_size_to_dynamic_smem_size);
-
-  return thrust::make_tuple(block_size * blocks_per_multiprocessor, block_size_to_dynamic_smem_size(block_size));
+  return __cuda_launch_config_detail::default_block_configuration(properties, attributes, block_size_to_dynamic_smem_size);
 }
 
 
 inline __host__ __device__
-thrust::tuple<std::size_t, std::size_t, std::size_t>
-block_size_with_maximum_potential_occupancy(const cudaFuncAttributes &attributes,
-                                            const cudaDeviceProp &properties)
+std::size_t block_size_with_maximum_potential_occupancy(const cudaFuncAttributes &attributes,
+                                                        const cudaDeviceProp &properties)
 {
-  using __cuda_launch_config_detail;
-  return block_size_with_maximum_potential_occupancy(attributes, properties, util::zero_function<std::size_t>());
-}
-
-
-inline __host__ __device__
-thrust::tuple<std::size_t, std::size_t, std::size_t>
-block_size_with_maximum_potential_occupancy_subject_to_available_smem(const cudaFuncAttributes &attributes,
-                                                                      const cudaDeviceProp &properties)
-{
-  using thrust::tie;
-  using __cuda_launch_config_detail;
-
-  std::size_t block_size = 0, blocks_per_multiprocessor = 0;
-
-  tie(block_size, blocks_per_multiprocessor) = default_block_configuration(properties, attributes);
-
-  size_t smem_per_block = proportional_smem_allocation(properties, attributes, config.second);
-
-  return thrust::make_tuple(block_size, blocks_per_multiprocessor, smem_per_block);
+  return block_size_with_maximum_potential_occupancy(attributes, properties, __cuda_launch_config_detail::util::zero_function<std::size_t>());
 }
 
