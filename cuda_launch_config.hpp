@@ -29,6 +29,7 @@ namespace util
 
 
 template<typename T>
+inline __host__ __device__
 T min_(const T &lhs, const T &rhs)
 {
   return rhs < lhs ? rhs : lhs;
@@ -73,27 +74,31 @@ template<typename L, typename R>
 
 
 // granularity of shared memory allocation
-inline size_t smem_allocation_unit(const cudaDeviceProp &)
+inline __host__ __device__
+size_t smem_allocation_unit(const cudaDeviceProp &)
 {
   return 512;
 }
 
 
 // granularity of register allocation
-inline size_t reg_allocation_unit(const cudaDeviceProp &properties)
+inline __host__ __device__
+size_t reg_allocation_unit(const cudaDeviceProp &properties)
 {
   return (properties.major < 2 && properties.minor < 2) ? 256 : 512;
 }
 
 
 // granularity of warp allocation
-inline size_t warp_allocation_multiple(const cudaDeviceProp &)
+inline __host__ __device__
+size_t warp_allocation_multiple(const cudaDeviceProp &)
 {
   return 2;
 }
 
 
-inline size_t max_blocks_per_multiprocessor(const cudaDeviceProp &)
+inline __host__ __device__
+size_t max_blocks_per_multiprocessor(const cudaDeviceProp &)
 {
   return 8;
 }
