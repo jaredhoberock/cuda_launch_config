@@ -18,7 +18,8 @@
 
 #include <cstddef>
 #include <cuda_runtime_api.h>
-
+#include <thrust/system_error.h>
+#include <thrust/system/cuda_error.h>
 
 /*! Computes a block size in number of threads for a CUDA kernel using a occupancy-promoting heuristic.
  *  \param attributes The cudaFuncAttributes corresponding to a __global__ function of interest on a GPU of interest.
@@ -218,3 +219,31 @@ std::size_t block_size_with_maximum_potential_occupancy(const cudaFuncAttributes
   return block_size_with_maximum_potential_occupancy(attributes, properties, __cuda_launch_config_detail::util::zero_function<std::size_t>());
 }
 
+template<typename T>
+inline __host__
+std::size_t block_size_with_maximum_potential_occupancy(T t)
+{
+  cudaError_t err;
+  cudaFuncAttributes attributes;
+  err = cudaFuncGetAttributes(&attributes, t);
+
+  if (err != cudaSuccess)
+    throw thrust::system_error(err, thrust::cuda_category(),
+    "Unable to get function attributes. Maybe a non __global__ function was passed?");
+
+  int device;
+  err = cudaGetDevice(&device);
+
+  if (err != cudaSuccess)
+    throw thrust::system_error(err, thrust::cuda_category(),
+    "Unable to get the current cuda device.");
+
+  cudaDeviceProp properties;
+  err = cudaGetDeviceProperties(&properties, device);
+  
+  if (err != cudaSuccess)
+    throw thrust::system_error(err, thrust::cuda_category(),
+    "Unable to get current device properties.");
+
+  return block_size_with_maximum_potential_occupancy(attributes, properties);
+}
