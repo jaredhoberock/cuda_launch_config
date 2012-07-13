@@ -108,32 +108,70 @@ template<typename L, typename R>
 
 // granularity of shared memory allocation
 inline __host__ __device__
-size_t smem_allocation_unit(const cudaDeviceProp &)
+size_t smem_allocation_unit(const cudaDeviceProp &properties)
 {
-  return 512;
+  switch(properties.major)
+  {
+    case 1:  return 512;
+    case 2:  return 128;
+    case 3:  return 256;
+    default: return 256; // unknown GPU; have to guess
+  }
 }
 
 
 // granularity of register allocation
 inline __host__ __device__
-size_t reg_allocation_unit(const cudaDeviceProp &properties)
+size_t reg_allocation_unit(const cudaDeviceProp &properties, const size_t regsPerThread)
 {
-  return (properties.major < 2 && properties.minor < 2) ? 256 : 512;
+  switch(properties.major)
+  {
+    case 1:  return (properties.minor <= 1) ? 256 : 512;
+    case 2:  switch(regsPerThread)
+             {
+               case 21:
+               case 22:
+               case 29:
+               case 30:
+               case 37:
+               case 38:
+               case 45:
+               case 46:
+                 return 128;
+               default:
+                 return 64;
+             }
+    case 3:  return 256;
+    default: return 256; // unknown GPU; have to guess
+  }
 }
 
 
 // granularity of warp allocation
 inline __host__ __device__
-size_t warp_allocation_multiple(const cudaDeviceProp &)
+size_t warp_allocation_multiple(const cudaDeviceProp &properties)
 {
-  return 2;
+  return (properties.major <= 1) ? 2 : 1;
+}
+
+// number of "sides" into which the multiprocessor is partitioned
+inline __host__ __device__
+size_t num_sides_per_multiprocessor(const cudaDeviceProp &properties)
+{
+  switch(properties.major)
+  {
+    case 1:  return 1;
+    case 2:  return 2;
+    case 3:  return 4;
+    default: return 4; // unknown GPU; have to guess
+  }
 }
 
 
 inline __host__ __device__
-size_t max_blocks_per_multiprocessor(const cudaDeviceProp &)
+size_t max_blocks_per_multiprocessor(const cudaDeviceProp &properties)
 {
-  return 8;
+  return (properties.major <= 2) ? 8 : 16;
 }
 
 
@@ -145,26 +183,57 @@ size_t max_active_blocks_per_multiprocessor(const cudaDeviceProp     &properties
 {
   // Determine the maximum number of CTAs that can be run simultaneously per SM
   // This is equivalent to the calculation done in the CUDA Occupancy Calculator spreadsheet
-  const size_t regAllocationUnit      = reg_allocation_unit(properties);
-  const size_t warpAllocationMultiple = warp_allocation_multiple(properties);
+
+  //////////////////////////////////////////
+  // Limits due to threads/SM or blocks/SM
+  //////////////////////////////////////////
+  const size_t maxThreadsPerSM = properties.maxThreadsPerMultiProcessor;  // 768, 1024, 1536, etc.
+  const size_t maxBlocksPerSM  = max_blocks_per_multiprocessor(properties);
+
+  // Calc limits
+  const size_t ctaLimitThreads = (CTA_SIZE <= properties.maxThreadsPerBlock) ? maxThreadsPerSM / CTA_SIZE : 0;
+  const size_t ctaLimitBlocks  = maxBlocksPerSM;
+
+  //////////////////////////////////////////
+  // Limits due to shared memory/SM
+  //////////////////////////////////////////
   const size_t smemAllocationUnit     = smem_allocation_unit(properties);
-  const size_t maxThreadsPerSM        = properties.maxThreadsPerMultiProcessor;  // 768, 1024, 1536, etc.
-  const size_t maxBlocksPerSM         = max_blocks_per_multiprocessor(properties);
-
-  // Number of warps (round up to nearest whole multiple of warp size & warp allocation multiple)
-  const size_t numWarps = util::round_i(util::divide_ri(CTA_SIZE, properties.warpSize), warpAllocationMultiple);
-
-  // Number of regs is regs per thread times number of warps times warp size
-  const size_t regsPerCTA = util::round_i(attributes.numRegs * properties.warpSize * numWarps, regAllocationUnit);
-
   const size_t smemBytes  = attributes.sharedSizeBytes + dynamic_smem_bytes;
   const size_t smemPerCTA = util::round_i(smemBytes, smemAllocationUnit);
 
-  const size_t ctaLimitRegs    = regsPerCTA > 0 ? properties.regsPerBlock      / regsPerCTA : maxBlocksPerSM;
-  const size_t ctaLimitSMem    = smemPerCTA > 0 ? properties.sharedMemPerBlock / smemPerCTA : maxBlocksPerSM;
-  const size_t ctaLimitThreads =                  maxThreadsPerSM              / CTA_SIZE;
+  // Calc limit
+  const size_t ctaLimitSMem = smemPerCTA > 0 ? properties.sharedMemPerBlock / smemPerCTA : maxBlocksPerSM;
 
-  return util::min_(ctaLimitRegs, util::min_(ctaLimitSMem, util::min_(ctaLimitThreads, maxBlocksPerSM)));
+  //////////////////////////////////////////
+  // Limits due to registers/SM
+  //////////////////////////////////////////
+  const size_t regAllocationUnit      = reg_allocation_unit(properties, attributes.numRegs);
+  const size_t warpAllocationMultiple = warp_allocation_multiple(properties);
+  const size_t numWarps = util::round_i(util::divide_ri(CTA_SIZE, properties.warpSize), warpAllocationMultiple);
+
+  // Calc limit
+  size_t ctaLimitRegs;
+  if(properties.major <= 1)
+  {
+    // GPUs of compute capability 1.x allocate registers to CTAs
+    // Number of regs per block is regs per thread times number of warps times warp size, rounded up to allocation unit
+    const size_t regsPerCTA = util::round_i(attributes.numRegs * properties.warpSize * numWarps, regAllocationUnit);
+    ctaLimitRegs = regsPerCTA > 0 ? properties.regsPerBlock / regsPerCTA : maxBlocksPerSM;
+  }
+  else
+  {
+    // GPUs of compute capability 2.x and higher allocate registers to warps
+    // Number of regs per warp is regs per thread times times warp size, rounded up to allocation unit
+    const size_t regsPerWarp = util::round_i(attributes.numRegs * properties.warpSize, regAllocationUnit);
+    const size_t numSides = num_sides_per_multiprocessor(properties);
+    const size_t numRegsPerSide = properties.regsPerBlock / numSides;
+    ctaLimitRegs = regsPerWarp > 0 ? ((numRegsPerSide / regsPerWarp) * numSides) / numWarps : maxBlocksPerSM;
+  }
+
+  //////////////////////////////////////////
+  // Overall limit is min() of limits due to above reasons
+  //////////////////////////////////////////
+  return util::min_(ctaLimitRegs, util::min_(ctaLimitSMem, util::min_(ctaLimitThreads, ctaLimitBlocks)));
 }
 
 
